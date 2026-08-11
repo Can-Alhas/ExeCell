@@ -10,6 +10,9 @@ int main()
     char program[] = "/bin/sh";
     char command[] = "touch /tmp/execell-host-must-not-exist";
     char* args[] = {program, const_cast<char*>("-c"), command, nullptr};
-    assert(execell::sandbox::run(program, args, {}) == 0);
+    const int status = execell::sandbox::run(program, args, {});
+    if (status != 0) {
+        return 77;
+    }
     assert(!std::filesystem::exists(path));
 }

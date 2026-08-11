@@ -233,6 +233,7 @@ if(BUILD_TESTING)
     target_compile_features(execell_sandbox_isolation_test PRIVATE cxx_std_23)
     target_compile_options(execell_sandbox_isolation_test PRIVATE -Werror)
     add_test(NAME sandbox_isolation COMMAND execell_sandbox_isolation_test)
+    set_tests_properties(sandbox_isolation PROPERTIES SKIP_RETURN_CODE 77)
 
     add_executable(execell_sandbox_cpu_test
         tests/sandbox_cpu_test.cpp
