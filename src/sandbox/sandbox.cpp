@@ -108,8 +108,11 @@ namespace {
         return ::waitpid(mapper, &status, 0) == mapper &&
                WIFEXITED(status) && WEXITSTATUS(status) == 0;
     };
-    (void)prefix;
-    return map("newuidmap", uid) && map("newgidmap", gid);
+    if (map("newuidmap", uid) && map("newgidmap", gid)) {
+        return true;
+    }
+    return write_file((prefix + "uid_map").c_str(), "0 " + std::to_string(uid) + " 1\n") &&
+           write_file((prefix + "gid_map").c_str(), "0 " + std::to_string(gid) + " 1\n");
 }
 
 void drop_capabilities() noexcept
