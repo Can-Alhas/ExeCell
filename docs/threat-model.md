@@ -16,8 +16,13 @@ Sandbox defaults:
 - optional network namespace.
 - optional seccomp allowlist with x86_64 architecture validation;
 - policy violations are audit events until enforcement mode is enabled.
+- package scanning is rootless-only;
+- package scans reject degraded non-Btrfs rootfs sessions.
 
 Sandbox setup failure prevents target execution.
 
-Current limitation: policy reporting does not yet terminate tracees. Seccomp and
-namespace restrictions enforce kernel-level sandbox boundaries.
+Current limitations: package archive inspection still uses external helper
+boundaries pending safe archive adapter work; policy reporting does not yet
+terminate tracees. Seccomp and namespace restrictions enforce kernel-level
+sandbox boundaries. Valid package signatures establish provenance, not benign
+behavior.

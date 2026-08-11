@@ -9,17 +9,30 @@
 ```
 
 Rootless mode always fails closed on missing or invalid signatures, rejects unsafe archive paths,
-uses a temporary rootfs, drops capabilities, sets `no_new_privileges`, isolates networking, and
-writes session artifacts under `/tmp/execell-package`.
+requires Btrfs rootfs isolation, drops capabilities, sets `no_new_privileges`, isolates networking,
+and writes session artifacts under `/tmp/execell-package`.
 
-## Rootful scan
+Privileged package scanning is disabled. All package scanning is rootless-only.
+
+## AUR Build
+
+Static `PKGBUILD` analysis:
 
 ```sh
-./build-clang/execell package scan --privileged --yes package.pkg.tar.zst
+./build-clang/execell package build --rootfs /path/to/btrfs/rootfs PKGBUILD
 ```
 
-`--privileged` requires explicit `--yes` in non-interactive use. It is intended only for a
-dedicated host. It requires root, `pacman`, and a rootfs containing pacman and its runtime.
+Build runs `makepkg` in rootless namespace isolation. Produced artifacts re-enter
+package validation. Missing signature rejects artifact validation.
+
+## Baseline
+
+Scan observations are stored in SQLite by default under `/tmp/execell-package`.
+Compare stored package versions:
+
+```sh
+./build-clang/execell package compare --format json package-name 1.0-1 1.1-1
+```
 
 ## Reports
 

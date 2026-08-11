@@ -16,8 +16,7 @@ installation.
 - Observes package scripts and executable smoke runs inside isolated sessions.
 - Produces filesystem, process, network, event, and explainable risk reports.
 
-ExeCell does not install anything on host by default. Rootful package execution requires explicit
-`--privileged --yes` confirmation.
+ExeCell package scanning is rootless-only. Privileged package execution is disabled.
 
 ## Requirements
 
@@ -25,9 +24,10 @@ ExeCell does not install anything on host by default. Rootful package execution 
 - GCC 13+ or Clang 17+
 - CMake 4.4.2+
 - Linux user, mount, and network namespace support
-- `tar` for local package inspection
+- `libarchive` for local package inspection
+- SQLite3 for baseline and version comparison storage
 - `pacman-key` and detached `.sig` file for signature verification
-- `pacman` and a suitable rootfs for rootful package installation
+- Btrfs for isolated package rootfs snapshots
 
 See [`docs/linux-requirements.md`](docs/linux-requirements.md).
 
@@ -84,6 +84,9 @@ The last command must fail with a read-only filesystem error.
 
 ## Package Scanner
 
+Package scans support local Arch archives, rootless AUR build inspection, SQLite
+behavior baselines, and version comparison. AI is not part of scan decisions.
+
 Rootless local scan:
 
 ```sh
@@ -107,10 +110,17 @@ JSON report:
 ./build/execell package scan --format json package.pkg.tar.zst
 ```
 
-Rootful mode:
+AUR build and version comparison:
 
 ```sh
-./build/execell package scan --privileged --yes package.pkg.tar.zst
+./build/execell package build --rootfs /path/to/btrfs/rootfs PKGBUILD
+./build/execell package compare --format json package-name 1.0-1 1.1-1
+```
+
+Optional delegated cgroup v2 budget:
+
+```sh
+./build/execell package scan --cgroup-root /sys/fs/cgroup/execell package.pkg.tar.zst
 ```
 
 Network is off by default. Mirror URLs require explicit validation:
@@ -146,9 +156,9 @@ privileged helpers, unsupported architectures, and host policy restrictions rema
 guarantees. Read [`docs/threat-model.md`](docs/threat-model.md) before using it with untrusted
 packages.
 
-When Btrfs is unavailable, scanner reports an explicit degraded rootfs mode. Rootless operation
-does not claim full pacman semantics when package runtime dependencies are unavailable. Mirror mode
-currently remains network-isolated until an allowlisted network namespace is configured.
+When Btrfs is unavailable, package scanning is rejected. Rootless operation does not claim full
+pacman semantics when package runtime dependencies are unavailable. Mirror mode currently remains
+network-isolated until an allowlisted network namespace is configured.
 
 ## Project Status
 
