@@ -189,6 +189,11 @@ int run(char* const program, char* const argv[], ::execell::report::Reporter& re
 
         const auto registers_result = ::execell::linux_api::get_registers(stopped_pid);
         if (!registers_result) {
+            if (registers_result.error().code.value() == ESRCH) {
+                tasks.erase(stopped_pid);
+                resume_current = true;
+                continue;
+            }
             std::cerr << "execell: PTRACE_GETREGS failed: "
                       << registers_result.error().message() << '\n';
             return EXIT_FAILURE;

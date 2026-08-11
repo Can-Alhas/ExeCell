@@ -7,17 +7,25 @@ project(
 	LANGUAGES CXX
 )
 
+find_path(LIBARCHIVE_INCLUDE_DIR archive.h REQUIRED)
+find_library(LIBARCHIVE_LIBRARY archive REQUIRED)
+
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "ExeCell requires Linux")
 endif()
 
 include(CTest)
 
+# Storage is optional so core sandbox builds remain usable on hosts without SQLite.
+find_package(SQLite3 QUIET)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(EXECELL_ENABLE_ADDRESS_SANITIZER "Enable ASan and UBSan in Debug builds" ON)
+option(EXECELL_ENABLE_FUZZING "Build Clang libFuzzer targets" OFF)
 
 add_executable(execell
 	src/main.cpp
@@ -37,10 +45,14 @@ add_executable(execell
 	src/policy/policy.cpp
 	src/policy/policy_reporter.cpp
 	src/sandbox/sandbox.cpp
+	src/sandbox/backend.cpp
 
 	src/trace/syscall_decoder.cpp
 
 	src/package/package.cpp
+	src/package/archive.cpp
+	src/package/aur.cpp
+	src/package/build.cpp
 	src/package/rootfs.cpp
 	src/package/observation.cpp
 	src/package/network.cpp
@@ -49,10 +61,37 @@ add_executable(execell
 
 target_compile_features(execell PRIVATE cxx_std_23)
 
+if(SQLite3_FOUND)
+    add_library(execell_storage STATIC src/package/storage.cpp)
+    target_include_directories(execell_storage PUBLIC ${PROJECT_SOURCE_DIR}/include)
+    target_compile_features(execell_storage PUBLIC cxx_std_23)
+    target_compile_options(execell_storage PRIVATE
+        -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
+        -Wformat=2 -Wundef -Werror
+    )
+    if(TARGET SQLite3::SQLite3)
+        target_link_libraries(execell_storage PUBLIC SQLite3::SQLite3)
+    elseif(TARGET SQLite::SQLite3)
+        target_link_libraries(execell_storage PUBLIC SQLite::SQLite3)
+    else()
+        target_include_directories(execell_storage PRIVATE ${SQLite3_INCLUDE_DIRS})
+        target_link_libraries(execell_storage PUBLIC ${SQLite3_LIBRARIES})
+    endif()
+else()
+    message(WARNING "SQLite3 not found; SQLite baseline storage targets disabled")
+endif()
+
 target_include_directories(execell
 	PRIVATE
 		${PROJECT_SOURCE_DIR}/include
+		${LIBARCHIVE_INCLUDE_DIR}
 )
+
+target_link_libraries(execell PRIVATE ${LIBARCHIVE_LIBRARY})
+if(SQLite3_FOUND)
+    target_link_libraries(execell PRIVATE execell_storage)
+    target_compile_definitions(execell PRIVATE EXECELL_HAVE_SQLITE=1)
+endif()
 
 target_compile_options(execell
 	PRIVATE
@@ -68,7 +107,7 @@ target_compile_options(execell
 )
 
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND EXECELL_ENABLE_ADDRESS_SANITIZER)
 		    target_compile_options(execell PRIVATE
 			   -fsanitize=address,undefined
 			   -fno-omit-frame-pointer
@@ -81,6 +120,14 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 if(BUILD_TESTING)
+    if(SQLite3_FOUND)
+        add_executable(execell_storage_test tests/storage_test.cpp)
+        target_link_libraries(execell_storage_test PRIVATE execell_storage)
+        target_compile_features(execell_storage_test PRIVATE cxx_std_23)
+        target_compile_options(execell_storage_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        add_test(NAME package_storage COMMAND execell_storage_test)
+    endif()
+
     add_executable(execell_fd_table_test
         tests/fd_table_test.cpp
         src/trace/fd_table.cpp
@@ -142,6 +189,9 @@ if(BUILD_TESTING)
     add_executable(execell_package_test
         tests/package_test.cpp
         src/package/package.cpp
+        src/package/archive.cpp
+        src/package/aur.cpp
+        src/package/build.cpp
         src/package/rootfs.cpp
         src/package/observation.cpp
         src/sandbox/sandbox.cpp
@@ -149,9 +199,63 @@ if(BUILD_TESTING)
         src/package/network.cpp
     )
     target_include_directories(execell_package_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_include_directories(execell_package_test PRIVATE ${LIBARCHIVE_INCLUDE_DIR})
+    target_link_libraries(execell_package_test PRIVATE ${LIBARCHIVE_LIBRARY})
+    if(SQLite3_FOUND)
+        target_link_libraries(execell_package_test PRIVATE execell_storage)
+        target_compile_definitions(execell_package_test PRIVATE EXECELL_HAVE_SQLITE=1)
+    endif()
     target_compile_features(execell_package_test PRIVATE cxx_std_23)
     target_compile_options(execell_package_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME package_subsystem COMMAND execell_package_test)
+
+    add_executable(execell_aur_test
+        tests/aur_test.cpp
+        src/package/aur.cpp
+        src/package/build.cpp
+        src/package/rootfs.cpp
+        src/sandbox/sandbox.cpp
+    )
+    target_include_directories(execell_aur_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_features(execell_aur_test PRIVATE cxx_std_23)
+    target_compile_options(execell_aur_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME aur_parser COMMAND execell_aur_test)
+
+    add_executable(execell_archive_test
+        tests/archive_test.cpp
+        src/package/archive.cpp
+    )
+    target_include_directories(execell_archive_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/include ${LIBARCHIVE_INCLUDE_DIR})
+    target_compile_features(execell_archive_test PRIVATE cxx_std_23)
+    target_compile_options(execell_archive_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(execell_archive_test PRIVATE ${LIBARCHIVE_LIBRARY})
+    add_test(NAME archive_adapter COMMAND execell_archive_test)
+
+    if(EXECELL_ENABLE_FUZZING AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_executable(execell_archive_fuzz
+            tests/archive_fuzz.cpp
+            src/package/archive.cpp
+        )
+        target_include_directories(execell_archive_fuzz PRIVATE
+            ${PROJECT_SOURCE_DIR}/include ${LIBARCHIVE_INCLUDE_DIR})
+        target_compile_features(execell_archive_fuzz PRIVATE cxx_std_23)
+        target_compile_options(execell_archive_fuzz PRIVATE
+            -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+        target_link_options(execell_archive_fuzz PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+        target_link_libraries(execell_archive_fuzz PRIVATE ${LIBARCHIVE_LIBRARY})
+    endif()
+
+    add_executable(execell_arch_acceptance
+        tests/arch_acceptance.cpp
+        src/package/rootfs.cpp
+    )
+    target_include_directories(execell_arch_acceptance PRIVATE ${PROJECT_SOURCE_DIR}/include)
+    target_compile_features(execell_arch_acceptance PRIVATE cxx_std_23)
+    target_compile_options(execell_arch_acceptance PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME arch_rootfs_acceptance COMMAND execell_arch_acceptance)
+    set_tests_properties(arch_rootfs_acceptance PROPERTIES SKIP_RETURN_CODE 77)
 
     add_executable(execell_trace_fixture tests/trace_fixture.cpp)
     target_compile_features(execell_trace_fixture PRIVATE cxx_std_23)
@@ -163,6 +267,7 @@ if(BUILD_TESTING)
         NAME inspect_fixture
         COMMAND execell inspect $<TARGET_FILE:execell_trace_fixture>
     )
+    add_test(NAME sandbox_trace_events COMMAND execell sandbox --trace-events /bin/true)
 
     add_executable(execell_network_fixture tests/network_fixture.cpp)
     target_compile_features(execell_network_fixture PRIVATE cxx_std_23)
@@ -305,4 +410,31 @@ if(BUILD_TESTING)
         execell_policy_sandbox_test)
         target_compile_options(${test_target} PRIVATE -Werror)
     endforeach()
+
+    set(EXECELL_TRACE_SUPPORT_SOURCES
+        src/sandbox/backend.cpp
+        src/trace/tracer.cpp
+        src/trace/stop.cpp
+        src/trace/architecture.cpp
+        src/trace/memory.cpp
+        src/trace/syscall.cpp
+        src/trace/fd_table.cpp
+        src/trace/syscall_decoder.cpp
+        src/report/terminal_reporter.cpp
+    )
+    foreach(sandbox_target IN ITEMS
+        execell_aur_test
+        execell_package_test
+        execell_policy_sandbox_test
+        execell_sandbox_isolation_test
+        execell_sandbox_cpu_test
+        execell_sandbox_memory_test
+        execell_sandbox_escape_test
+        execell_parent_death_test)
+        target_sources(${sandbox_target} PRIVATE ${EXECELL_TRACE_SUPPORT_SOURCES})
+    endforeach()
+    if(CMAKE_CXX_FLAGS MATCHES "fsanitize=thread")
+        # TSan runtime interceptors are incompatible with unprivileged user-namespace setup.
+        set_tests_properties(sandbox_trace_events PROPERTIES WILL_FAIL TRUE)
+    endif()
 endif()

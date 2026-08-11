@@ -9,9 +9,12 @@ namespace execell::package::observation {
 
 struct Options {
     std::chrono::seconds timeout{30};
+    std::chrono::seconds global_timeout{30};
     bool network{};
     bool run_all{};
+    std::size_t max_workers{4};
     std::size_t output_limit{1U << 20U};
+    std::filesystem::path cgroup_root;
 };
 
 struct Result {
@@ -20,6 +23,7 @@ struct Result {
     std::vector<std::string> network;
     std::vector<std::string> smoke;
     std::vector<std::string> risk_factors;
+    std::vector<std::string> coverage;
 };
 
 Result observe(const std::filesystem::path& rootfs,

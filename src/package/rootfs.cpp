@@ -15,9 +15,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
+#include <atomic>
 
 namespace execell::package::rootfs {
 namespace {
+
+std::atomic<unsigned long long> session_sequence{};
 
 char *guardian_arguments[7]{};
 
@@ -165,7 +168,8 @@ std::expected<Session, std::string> Session::create(const std::filesystem::path 
         return result;
     }
 
-    const auto stamp = std::to_string(::getpid()) + "-" + std::to_string(::getuid());
+    const auto stamp = std::to_string(::getpid()) + "-" + std::to_string(::getuid()) + "-" +
+                       std::to_string(session_sequence.fetch_add(1U, std::memory_order_relaxed));
     const auto parent = source.empty() ? workspace : source.parent_path();
     std::filesystem::path snapshot_source = source;
     if (source.empty()) {

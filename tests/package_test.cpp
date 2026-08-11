@@ -38,30 +38,33 @@ int main() {
     const auto fixture = std::filesystem::temp_directory_path() / ("execell-package-test-" + suffix);
     std::filesystem::remove_all(fixture);
     std::filesystem::create_directories(fixture);
-    const auto tar = fixture / "tar";
     const auto key = fixture / "pacman-key";
-    {
-        std::ofstream script(tar);
-        script << "#!/bin/sh\n"
-                  "case \"$*\" in\n"
-                  "  *\\.PKGINFO*) printf 'pkgname = fixture\\npkgver = 1\\narch = x86_64\\n';;\n"
-                  "  *--null*) printf 'usr/bin/tool\\000';;\n"
-                  "  *) printf '#!/bin/sh\\nexit 0\\n';;\n"
-                  "esac\n";
-    }
+    std::filesystem::create_directories(fixture / "usr/bin");
+    std::ofstream(fixture / ".PKGINFO")
+        << "pkgname = fixture\npkgver = 1\narch = x86_64\n";
+    std::ofstream(fixture / "usr/bin/tool") << "#!/bin/sh\nexit 0\n";
     {
         std::ofstream script(key);
         script << "#!/bin/sh\nexit 0\n";
     }
-    (void)::chmod(tar.c_str(), 0700);
     (void)::chmod(key.c_str(), 0700);
     const char* old_path = std::getenv("PATH");
     const std::string path = fixture.string() + ":" + (old_path == nullptr ? "" : old_path);
     (void)::setenv("PATH", path.c_str(), 1);
     const auto archive = fixture / "fixture.pkg.tar.zst";
-    std::ofstream(archive) << "not an archive";
+    const std::string create_archive = "tar -cf \"" + archive.string() + "\" -C \"" +
+                                        fixture.string() + "\" .PKGINFO usr/bin/tool";
+    if (std::system(create_archive.c_str()) != 0) return 1;
     std::ofstream(archive.string() + ".sig") << "signature";
     options.session_root = fixture / "sessions";
+    if (!capabilities.btrfs) {
+        const auto rejected = execell::package::scan(archive, options);
+        if (rejected.ok) return 1;
+        if (old_path == nullptr) (void)::unsetenv("PATH"); else (void)::setenv("PATH", old_path, 1);
+        std::filesystem::remove_all(fixture);
+        const auto cleaned = execell::package::cleanup(options);
+        return cleaned.ok ? 0 : 1;
+    }
     const auto scanned = execell::package::scan(archive, options);
     assert(scanned.ok);
     assert(scanned.session != std::filesystem::path{});
@@ -72,15 +75,9 @@ int main() {
     const auto second = execell::package::scan(archive, options);
     assert(second.ok);
     assert(scanned.session != second.session);
-    {
-        std::ofstream script(tar);
-        script << "#!/bin/sh\n"
-                  "case \"$*\" in\n"
-                  "  *\\.PKGINFO*) printf 'pkgname = fixture\\npkgver = 1\\narch = x86_64\\n';;\n"
-                  "  *--null*) printf '../escape\\000';;\n"
-                  "esac\n";
-    }
-    (void)::chmod(tar.c_str(), 0700);
+    const std::string unsafe_archive = "tar -cf \"" + archive.string() + "\" --transform='s#usr/bin/tool#../escape#' -C \"" +
+                                       fixture.string() + "\" .PKGINFO usr/bin/tool";
+    if (std::system(unsafe_archive.c_str()) != 0) return 1;
     const auto rejected = execell::package::scan(archive, options);
     assert(!rejected.ok);
     assert(rejected.error.find("unsafe archive path") != std::string::npos);

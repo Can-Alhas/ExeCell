@@ -1,5 +1,7 @@
 #include "execell/cli/invocation.hpp"
 #include "execell/package/package.hpp"
+#include "execell/package/build.hpp"
+#include "execell/package/rootfs.hpp"
 #include "execell/package/network.hpp"
 #include "execell/policy/policy_reporter.hpp"
 #include "execell/process/process.hpp"
@@ -33,9 +35,9 @@ void print_usage(std::string_view executable) {
         << "  " << executable << " inspect --deny-path PATH <program> [arguments...]\n"
         << "  " << executable << " inspect --max-processes N <program> [arguments...]\n"
         << "  " << executable
-        << " sandbox [--network] [--cpu N] [--memory BYTES] <program> [arguments...]\n"
-        << "  " << executable << " package scan|fetch|report|cleanup [options] [path]\n"
-         << "    options: --privileged --yes --timeout 30s --network off|mirror --mirror URL --run-all --byte-diff\n";
+         << " sandbox [--backend namespace|vm] [--network] [--trace-events] [--cpu N] [--memory BYTES] <program> [arguments...]\n"
+          << "  " << executable << " package scan|build|compare|doctor|fetch|report|cleanup [options] [path]\n"
+          << "    options: --timeout 30s --workers N --rebuild N --database PATH --cgroup-root PATH --network off|mirror --mirror URL --allow-host HOST --run-all --byte-diff\n";
 }
 
 } // namespace
@@ -133,11 +135,24 @@ int main(int argc, char *argv[]) {
                 config.network_namespace = true;
                 continue;
             }
+            if (option == "--trace-events") {
+                config.trace_events = true;
+                continue;
+            }
             if (program_index >= argc) {
                 std::cerr << "execell: missing value for " << option << '\n';
                 return EXIT_FAILURE;
             }
             const std::string_view value{argv[program_index++]};
+            if (option == "--backend") {
+                if (value == "namespace") config.backend = execell::sandbox::Backend::namespaces;
+                else if (value == "vm") config.backend = execell::sandbox::Backend::vm;
+                else {
+                    std::cerr << "execell: invalid sandbox backend\n";
+                    return EXIT_FAILURE;
+                }
+                continue;
+            }
             std::uint64_t parsed{};
             const auto [end, error] =
                 std::from_chars(value.data(), value.data() + value.size(), parsed);
@@ -172,12 +187,12 @@ int main(int argc, char *argv[]) {
         while (argument < argc && std::string_view{argv[argument]}.starts_with("--")) {
             const std::string_view option{argv[argument++]};
             if (option == "--privileged") {
-                options.privileged = true;
-                continue;
+                std::cerr << "execell: privileged package scanning is disabled; rootless only\n";
+                return EXIT_FAILURE;
             }
             if (option == "--yes") {
-                options.confirm_privileged = true;
-                continue;
+                std::cerr << "execell: --yes is only valid with disabled privileged scanning\n";
+                return EXIT_FAILURE;
             }
             if (option == "--run-all") {
                 options.run_all = true;
@@ -210,6 +225,13 @@ int main(int argc, char *argv[]) {
                     return EXIT_FAILURE;
                 }
                 options.mirrors.push_back(value);
+            } else if (option == "--allow-host") {
+                if (value.empty() || value.find('/') != std::string::npos ||
+                    value.find('\0') != std::string::npos) {
+                    std::cerr << "execell: invalid allowed host\n";
+                    return EXIT_FAILURE;
+                }
+                options.allowed_hosts.push_back(value);
             } else if (option == "--rootfs")
                 options.rootfs = value;
             else if (option == "--timeout") {
@@ -225,6 +247,28 @@ int main(int argc, char *argv[]) {
                     return EXIT_FAILURE;
                 }
                 options.timeout = std::chrono::seconds(parsed);
+            } else if (option == "--workers") {
+                std::uint64_t parsed{};
+                const auto [end, error] =
+                    std::from_chars(value.data(), value.data() + value.size(), parsed);
+                if (error != std::errc{} || end != value.data() + value.size() || parsed == 0U ||
+                    parsed > 128U) {
+                    std::cerr << "execell: invalid package worker count\n";
+                    return EXIT_FAILURE;
+                }
+                options.workers = static_cast<std::size_t>(parsed);
+            } else if (option == "--database") {
+                options.database = value;
+            } else if (option == "--cgroup-root") {
+                options.cgroup_root = value;
+            } else if (option == "--rebuild") {
+                std::uint64_t repetitions{};
+                const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), repetitions);
+                if (error != std::errc{} || end != value.data() + value.size() || repetitions < 1U || repetitions > 3U) {
+                    std::cerr << "execell: invalid rebuild count\n";
+                    return EXIT_FAILURE;
+                }
+                options.build_repetitions = static_cast<std::size_t>(repetitions);
             } else {
                 std::cerr << "execell: unknown package option: " << option << '\n';
                 return EXIT_FAILURE;
@@ -238,18 +282,68 @@ int main(int argc, char *argv[]) {
             std::cerr << "execell: --mirror requires --network mirror\n";
             return EXIT_FAILURE;
         }
-        if (options.privileged && !options.confirm_privileged) {
-            if (!::isatty(STDIN_FILENO)) {
-                std::cerr << "execell: --privileged requires --yes in noninteractive mode\n";
-                return EXIT_FAILURE;
-            }
-            std::cerr << "warning: privileged package execution can modify system state. Continue? [y/N] ";
-            std::string answer;
-            if (!std::getline(std::cin, answer) || (answer != "y" && answer != "Y")) return EXIT_FAILURE;
-        }
         execell::package::Result result;
+        if (action == "doctor") {
+            const auto capabilities = execell::package::rootfs::detect(options.rootfs.empty()
+                                                                            ? std::filesystem::path{"/tmp"}
+                                                                            : options.rootfs);
+            const auto has = [](const char* path) { return ::access(path, X_OK) == 0; };
+            if (options.format == "json") {
+                std::cout << "{\"schema_version\":1,\"btrfs\":"
+                          << (capabilities.btrfs ? "true" : "false")
+                          << ",\"rootless\":" << (capabilities.rootless ? "true" : "false")
+                          << ",\"mount_namespace\":"
+                          << (capabilities.mount_namespace ? "true" : "false")
+                          << ",\"user_namespace\":"
+                          << (capabilities.user_namespace ? "true" : "false")
+                          << ",\"pacman\":" << (has("/usr/bin/pacman") ? "true" : "false")
+                          << ",\"makepkg\":" << (has("/usr/bin/makepkg") ? "true" : "false")
+                          << ",\"gpgv\":" << (has("/usr/bin/gpgv") ? "true" : "false")
+                          << "}\n";
+            } else {
+                std::cout << "btrfs: " << (capabilities.btrfs ? "yes" : "no") << '\n'
+                          << "rootless: " << (capabilities.rootless ? "yes" : "no") << '\n'
+                          << "mount namespace: " << (capabilities.mount_namespace ? "yes" : "no") << '\n'
+                          << "user namespace: " << (capabilities.user_namespace ? "yes" : "no") << '\n'
+                          << "pacman: " << (has("/usr/bin/pacman") ? "yes" : "no") << '\n'
+                          << "makepkg: " << (has("/usr/bin/makepkg") ? "yes" : "no") << '\n'
+                          << "gpgv: " << (has("/usr/bin/gpgv") ? "yes" : "no") << '\n';
+            }
+            return (capabilities.btrfs && capabilities.rootless && capabilities.mount_namespace)
+                       ? EXIT_SUCCESS
+                       : EXIT_FAILURE;
+        }
         if (action == "scan" && argument < argc)
             result = execell::package::scan(argv[argument], options);
+        else if (action == "compare" && argument + 2 < argc) {
+            result = execell::package::compare(argv[argument], argv[argument + 1],
+                                               argv[argument + 2], options);
+            execell::package::print(result, options);
+            return result.ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        }
+        else if (action == "build" && argument < argc) {
+            execell::package::build::Options build_options{
+                .rootfs = options.rootfs,
+                .workspace = options.session_root / "build-workspace",
+                .artifact_root = options.session_root / "build-artifacts",
+                .timeout = options.timeout,
+                .network = options.network == "mirror",
+                .allowed_hosts = options.allowed_hosts,
+                .cgroup_root = options.cgroup_root,
+                .repetitions = options.build_repetitions};
+            const auto built = execell::package::build::run(argv[argument], build_options);
+            std::cout << (built.ok ? "build: ok" : "build: rejected") << '\n';
+            if (!built.error.empty()) std::cout << "error: " << built.error << '\n';
+            for (const auto& finding : built.findings) std::cout << "finding: " << finding << '\n';
+            if (!built.ok) return EXIT_FAILURE;
+            bool packages_ok = true;
+            for (const auto& artifact : built.artifacts) {
+                const auto scanned = execell::package::scan(artifact, options);
+                std::cout << "artifact: " << artifact << " verdict=" << scanned.verdict << '\n';
+                packages_ok = packages_ok && scanned.ok;
+            }
+            return packages_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+        }
         else if (action == "fetch" && argument < argc)
             result = execell::package::fetch(argv[argument], options);
         else if (action == "report" && argument < argc)

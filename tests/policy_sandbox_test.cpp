@@ -43,4 +43,11 @@ int main()
 
     execell::sandbox::Config invalid_root{.read_only_root = true};
     assert(execell::sandbox::validate(invalid_root));
+
+    execell::sandbox::Config relative_cgroup;
+    relative_cgroup.cgroup.path = "relative-cgroup";
+    if (execell::sandbox::validate(relative_cgroup)) return 1;
+    execell::sandbox::Config valid_cgroup;
+    valid_cgroup.cgroup.cpu_period_us = 100000;
+    if (!execell::sandbox::validate(valid_cgroup)) return 1;
 }
