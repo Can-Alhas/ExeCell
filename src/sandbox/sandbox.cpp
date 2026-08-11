@@ -286,7 +286,13 @@ int run(char* const program, char* const argv[], const Config& config)
         return EXIT_FAILURE;
     }
     const char ready = 1;
+    struct sigaction ignore_sigpipe{};
+    ignore_sigpipe.sa_handler = SIG_IGN;
+    sigemptyset(&ignore_sigpipe.sa_mask);
+    struct sigaction previous_sigpipe{};
+    (void)::sigaction(SIGPIPE, &ignore_sigpipe, &previous_sigpipe);
     (void)::write(sync_write.get(), &ready, 1);
+    (void)::sigaction(SIGPIPE, &previous_sigpipe, nullptr);
     sync_write.reset();
 
     const auto waited = ::execell::linux_api::wait_for(pid);
