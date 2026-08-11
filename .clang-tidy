@@ -1,0 +1,4 @@
+Checks: '-*,bugprone-*,cppcoreguidelines-*,performance-*,portability-*,readability-*'
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/execell/.*'
+FormatStyle: file

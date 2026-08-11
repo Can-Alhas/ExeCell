@@ -1,0 +1,26 @@
+# Build trees and generated CMake files
+/build/
+/build-*/
+/Testing/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Makefile
+
+# Runtime artifacts
+/execell-package/
+/coverage/
+*.pkg.tar.*
+*.pkg.tar.*.sig
+
+# Local planning and editor files
+*.org
+.dir-locals.el
+.cache/
+.clangd/
+
+# Tool output
+*.log
+.DS_Store
