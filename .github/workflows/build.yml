@@ -13,8 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: lukka/get-cmake@latest
+      - name: Install Clang standard library
+        if: matrix.compiler == 'clang'
+        run: sudo apt-get update && sudo apt-get install --yes clang libc++-dev libc++abi-dev
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }} ${{ matrix.compiler == 'clang' && '-DCMAKE_CXX_FLAGS=-stdlib=libc++' || '' }}
       - name: Build
         run: cmake --build build --parallel
       - name: Test
