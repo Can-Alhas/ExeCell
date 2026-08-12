@@ -17,6 +17,7 @@ Makefile
 
 # Local planning and editor files
 *.org
+!manuel deneme.org
 .opencode/
 .dir-locals.el
 .cache/

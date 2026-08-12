@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.4.2)
 
 project(
 	ExeCell
-	VERSION 0.1.1
+	VERSION 0.2.0
 	DESCRIPTION "Linux process inspection and sandboxing toolkit"
 	LANGUAGES CXX
 )
@@ -57,7 +57,22 @@ add_executable(execell
 	src/package/observation.cpp
 	src/package/network.cpp
 	src/risk/risk.cpp
+	src/analyze/analyze.cpp
 )
+
+add_executable(execell_manual_fixture examples/manual_fixture.cpp)
+target_compile_features(execell_manual_fixture PRIVATE cxx_std_23)
+target_compile_options(execell_manual_fixture PRIVATE
+	-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow
+	-Wformat=2 -Wundef -Werror
+)
+
+add_executable(execell_analyze_output_fixture tests/analyze_output_fixture.cpp)
+add_executable(execell_analyze_timeout_fixture tests/analyze_timeout_fixture.cpp)
+foreach(analyze_fixture IN ITEMS execell_analyze_output_fixture execell_analyze_timeout_fixture)
+    target_compile_features(${analyze_fixture} PRIVATE cxx_std_23)
+    target_compile_options(${analyze_fixture} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endforeach()
 
 target_compile_features(execell PRIVATE cxx_std_23)
 
@@ -266,6 +281,33 @@ if(BUILD_TESTING)
     add_test(
         NAME inspect_fixture
         COMMAND execell inspect $<TARGET_FILE:execell_trace_fixture>
+    )
+    add_test(
+        NAME analyze_manual_fixture
+        COMMAND execell analyze $<TARGET_FILE:execell_manual_fixture> file
+    )
+    add_test(
+        NAME analyze_policy_reject
+        COMMAND execell analyze --deny-path /tmp $<TARGET_FILE:execell_manual_fixture> file
+    )
+    set_tests_properties(analyze_policy_reject PROPERTIES WILL_FAIL TRUE)
+    add_test(
+        NAME analyze_timeout
+        COMMAND execell analyze --sandbox --timeout 1 $<TARGET_FILE:execell_analyze_timeout_fixture>
+    )
+    set_tests_properties(analyze_timeout PROPERTIES WILL_FAIL TRUE TIMEOUT 5)
+    add_test(
+        NAME analyze_output_limit
+        COMMAND execell analyze --sandbox --output-limit 128 $<TARGET_FILE:execell_analyze_output_fixture>
+    )
+    set_tests_properties(analyze_output_limit PROPERTIES WILL_FAIL TRUE TIMEOUT 5)
+    add_test(
+        NAME analyze_json_schema
+        COMMAND sh -c
+                "$<TARGET_FILE:execell> analyze --format json $<TARGET_FILE:execell_manual_fixture> file > /tmp/execell-analyze-schema.json && python3 -c 'import json; x=json.load(open(\"/tmp/execell-analyze-schema.json\")); assert x[\"schema_version\"] == 2; assert \"findings\" in x; assert \"events\" in x; y=json.load(open(x[\"session\"] + \"/summary.json\")); assert y[\"verdict\"] == x[\"verdict\"]'")
+    add_test(
+        NAME package_doctor_root_default
+        COMMAND execell package doctor --format json
     )
     add_test(NAME sandbox_trace_events COMMAND execell sandbox --trace-events /bin/true)
 

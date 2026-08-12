@@ -16,7 +16,16 @@ void Engine::reject(std::string_view name, std::string_view explanation) {
 Assessment Engine::assess() const {
     Assessment result;
     result.factors = factors_;
-    for (const auto& factor : factors_) result.score += factor.weight;
+    for (const auto& factor : factors_) {
+        result.score += factor.weight;
+        result.findings.push_back({
+            .id = factor.name,
+            .resource = {},
+            .pid = 0,
+            .sequence = 0,
+            .explanation = factor.explanation,
+            .weight = factor.weight});
+    }
     result.score = std::min(result.score, 100);
     if (direct_reject_) {
         result.level = Level::critical;

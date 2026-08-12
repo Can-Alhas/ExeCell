@@ -1,19 +1,26 @@
 #include "execell/cli/invocation.hpp"
+#include "execell/analyze/analyze.hpp"
 #include "execell/package/package.hpp"
 #include "execell/package/build.hpp"
 #include "execell/package/rootfs.hpp"
 #include "execell/package/network.hpp"
 #include "execell/policy/policy_reporter.hpp"
 #include "execell/process/process.hpp"
+#include "execell/risk/risk.hpp"
 #include "execell/report/json_reporter.hpp"
 #include "execell/report/summary_reporter.hpp"
+#include "execell/report/terminal_reporter.hpp"
 #include "execell/sandbox/sandbox.hpp"
 #include "execell/trace/tracer.hpp"
 #include <cerrno>
 #include <charconv>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <iostream>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string_view>
 
 #include <sys/types.h>
@@ -22,7 +29,7 @@
 
 namespace {
 
-constexpr std::string_view version{"0.1.0"};
+constexpr std::string_view version{"0.2.0"};
 
 void print_usage(std::string_view executable) {
     std::cout
@@ -31,9 +38,10 @@ void print_usage(std::string_view executable) {
         << "  " << executable << " run <program>   [arguments...]\n"
         << "  " << executable << " trace <program> [arguments...]\n"
         << "  " << executable << " trace --format json <program> [arguments...]\n"
-        << "  " << executable << " inspect <program> [arguments...]\n"
-        << "  " << executable << " inspect --deny-path PATH <program> [arguments...]\n"
-        << "  " << executable << " inspect --max-processes N <program> [arguments...]\n"
+         << "  " << executable << " inspect <program> [arguments...]\n"
+         << "  " << executable << " inspect --deny-path PATH <program> [arguments...]\n"
+         << "  " << executable << " inspect --max-processes N <program> [arguments...]\n"
+         << "  " << executable << " analyze [--format terminal|json] [--sandbox] [--timeout S] [--output-limit BYTES] [policy options] <program> [arguments...]\n"
         << "  " << executable
          << " sandbox [--backend namespace|vm] [--network] [--trace-events] [--cpu N] [--memory BYTES] <program> [arguments...]\n"
           << "  " << executable << " package scan|build|compare|doctor|fetch|report|cleanup [options] [path]\n"
@@ -65,6 +73,63 @@ int main(int argc, char *argv[]) {
             return result;
         }
         return execell::trace::run(argv[2], &argv[2]);
+    }
+
+    if (command == "analyze") {
+        execell::analyze::Options options;
+        std::vector<std::string> target;
+        int program_index = 2;
+        while (program_index < argc && std::string_view{argv[program_index]}.starts_with("--")) {
+            const std::string_view option{argv[program_index++]};
+            if (option == "--format") {
+                if (program_index >= argc) return EXIT_FAILURE;
+                const std::string_view value{argv[program_index++]};
+                if (value != "terminal" && value != "json") return EXIT_FAILURE;
+                options.format = value == "json" ? execell::analyze::Format::json
+                                                   : execell::analyze::Format::terminal;
+                continue;
+            }
+            if (option == "--sandbox") {
+                options.sandbox = true;
+                continue;
+            }
+            if (option == "--timeout" || option == "--output-limit" ||
+                option == "--deny-path" || option == "--deny-endpoint" ||
+                option == "--deny-syscall" || option == "--max-processes") {
+                if (program_index >= argc) return EXIT_FAILURE;
+                const std::string value{argv[program_index++]};
+                if (option == "--timeout" || option == "--output-limit") {
+                    std::uint64_t parsed{};
+                    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                    if (error != std::errc{} || end != value.data() + value.size() || parsed == 0U) return EXIT_FAILURE;
+                    if (option == "--timeout") options.timeout = std::chrono::seconds(parsed);
+                    else options.output_limit = static_cast<std::size_t>(parsed);
+                    continue;
+                }
+                if (option == "--deny-path") options.policy.denied_paths.emplace_back(value);
+                else if (option == "--deny-endpoint") options.policy.denied_endpoints.push_back(value);
+                else if (option == "--deny-syscall") options.policy.denied_syscalls.push_back(value);
+                else {
+                    std::uint64_t parsed{};
+                    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+                    if (error != std::errc{} || end != value.data() + value.size()) return EXIT_FAILURE;
+                    options.policy.max_processes = static_cast<std::size_t>(parsed);
+                }
+                continue;
+            }
+            std::cerr << "execell: unknown analyze option: " << option << '\n';
+            return EXIT_FAILURE;
+        }
+        if (program_index >= argc) {
+            print_usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        for (int index = program_index; index < argc; ++index) target.emplace_back(argv[index]);
+        const auto result = execell::analyze::run(target, options);
+        if (options.format == execell::analyze::Format::json) std::cout << execell::analyze::json(result) << '\n';
+        else execell::analyze::print(result);
+        return execell::analyze::json(result).find("\"verdict\":\"allow\"") != std::string::npos
+                   ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     if (command == "inspect") {
@@ -285,7 +350,7 @@ int main(int argc, char *argv[]) {
         execell::package::Result result;
         if (action == "doctor") {
             const auto capabilities = execell::package::rootfs::detect(options.rootfs.empty()
-                                                                            ? std::filesystem::path{"/tmp"}
+                                                                             ? std::filesystem::path{"/"}
                                                                             : options.rootfs);
             const auto has = [](const char* path) { return ::access(path, X_OK) == 0; };
             if (options.format == "json") {

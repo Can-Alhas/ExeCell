@@ -11,9 +11,7 @@ void Reporter::report(const event::Event& event)
         downstream_.report(event::PolicyViolation{
             .rule = violation.rule,
             .resource = violation.resource,
-            .context = std::visit([](const auto& value) {
-                return value.context;
-            }, event)
+            .context = violation.context
         });
     }
 }

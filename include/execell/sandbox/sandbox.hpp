@@ -55,6 +55,7 @@ validate_cgroup(const Config::CgroupBudget&);
 struct Captured {
     int status{-1};
     bool timed_out{};
+    bool output_limited{};
     std::string stdout_data;
     std::string stderr_data;
 };

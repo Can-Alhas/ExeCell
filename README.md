@@ -1,5 +1,8 @@
 # ExeCell
 
+Version 0.2.0: analyze workflow, explainable findings, bounded sandbox
+execution, session JSON artifacts, and rootfs capability detection.
+
 ExeCell is a Linux x86_64 process inspection and package-audit toolkit written in modern C++23.
 It traces untrusted programs, applies sandbox policies, and audits Arch Linux packages before
 installation.

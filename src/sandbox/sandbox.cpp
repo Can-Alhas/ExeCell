@@ -541,13 +541,16 @@ Captured run_captured(const std::vector<std::string>& args, const Config& config
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     bool out_open = true, err_open = true;
     std::array<char, 4096> buffer{};
+    std::size_t total_output{};
     const auto drain = [&](int fd, std::string& target, bool& open) {
         for (;;) {
             const ssize_t count = ::read(fd, buffer.data(), buffer.size());
             if (count > 0) {
-                if (target.size() < output_limit)
-                    target.append(buffer.data(), std::min(output_limit - target.size(),
-                                                          static_cast<std::size_t>(count)));
+                const auto bytes = static_cast<std::size_t>(count);
+                const auto remaining = output_limit > total_output ? output_limit - total_output : 0U;
+                if (remaining != 0U) target.append(buffer.data(), std::min(remaining, bytes));
+                total_output += bytes;
+                if (total_output >= output_limit) result.output_limited = true;
             } else if (count == 0 || (count < 0 && errno != EAGAIN && errno != EINTR)) {
                 open = false;
                 (void)::close(fd);
@@ -559,6 +562,10 @@ Captured run_captured(const std::vector<std::string>& args, const Config& config
     while (out_open || err_open) {
         drain(out_pipe[0], result.stdout_data, out_open);
         drain(err_pipe[0], result.stderr_data, err_open);
+        if (result.output_limited) {
+            (void)::kill(-child, SIGKILL);
+            break;
+        }
         if (std::chrono::steady_clock::now() >= deadline) {
             result.timed_out = true;
             (void)::kill(-child, SIGKILL);

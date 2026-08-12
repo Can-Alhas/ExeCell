@@ -1,0 +1,300 @@
+#+TITLE: ExeCell Manuel Deneme Rehberi
+#+AUTHOR: ExeCell
+#+LANGUAGE: tr
+#+OPTIONS: toc:3 ^:nil
+
+* Amaç
+
+Bu dosya ExeCell'i Linux üzerinde elle denemek için hazırlanmıştır. Proje,
+çalıştırılan programın davranışını =ptrace= ile izler; dosya, süreç, sistem
+çağrısı ve ağ olaylarını raporlar. =inspect= bu olayları politika ile karşılaştırır.
+=sandbox= ise programı user/mount namespace, capability azaltma,
+=no_new_privileges= ve salt-okunur kök dosya sistemi gibi kısıtlarla çalıştırır.
+
+Paket alt sistemi yerel Arch paketlerini doğrular, arşiv yollarını ve metadata'yı
+inceler, imza ve risk bilgisi üretir. Paket taraması rootless çalışır; root yetkisi
+ile paket çalıştırma bilinçli olarak kapalıdır.
+
+* Ön Koşullar
+
+- Linux x86_64 kullanın.
+- GCC 13+ veya Clang 17+, CMake 4.4.2+, libarchive ve tercihen SQLite3 kurulu olsun.
+- =ptrace= ve user namespace politikaları etkin olsun.
+- Sandbox denemeleri host çekirdeği tarafından reddedilebilir. Bu durumda program
+  hatayı raporlar; bu, hedef programın çalıştığı anlamına gelmez.
+- Güvenilmeyen paketlerde ayrı test makinesi veya sanal makine kullanın.
+
+* Derleme
+
+Temiz Release derlemesi:
+
+#+begin_src sh
+cmake -S . -B build-manual -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build-manual -j2
+#+end_src
+
+Debug ve sanitizer derlemesi:
+
+#+begin_src sh
+cmake -S . -B build-manual-debug -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+cmake --build build-manual-debug -j2
+#+end_src
+
+Testleri çalıştırın:
+
+#+begin_src sh
+ctest --test-dir build-manual --output-on-failure
+#+end_src
+
+Bu rehberdeki komutlar proje kök dizininden çalıştırılır. Farklı build dizini
+kullanırsanız =build-manual/execell= ve =build-manual/execell_manual_fixture=
+yollarını değiştirin.
+
+* Deneme Programı
+
+Derleme, =execell_manual_fixture= adlı küçük yardımcı program oluşturur.
+Varsayılan =all= modu şu davranışları üretir:
+
+1. =/tmp/execell-manual-demo.txt= dosyasını oluşturur, yazar ve siler.
+2. Kısa ömürlü child process oluşturur ve bekler.
+3. Dış ağa bağlanmadan loopback üzerinde TCP socket oluşturur, bind/listen yapar
+   ve kapatır.
+
+Program dosyayı sonunda sildiği için host üzerinde kalıcı test artığı bırakmaz.
+Tekil davranışlar:
+
+#+begin_src sh
+./build-manual/execell_manual_fixture --help
+./build-manual/execell_manual_fixture file
+./build-manual/execell_manual_fixture process
+./build-manual/execell_manual_fixture network
+./build-manual/execell_manual_fixture fail
+#+end_src
+
+=fail= bilinçli olarak exit status 42 döndürür; ExeCell'in başarısız hedef
+durumunu raporlamasını denemek içindir.
+
+** Risk simülasyonu
+
+=risk= modu kötü niyetli yazılımlarda görülebilecek davranışları taklit eder,
+fakat sisteme zarar vermemek için bütün etkileri sınırlar:
+
+- =/etc/shadow=, =/proc/self/environ= ve =/root/.ssh/id_rsa= yalnızca
+  okunmak üzere açılmaya çalışılır; yazma yapılmaz.
+- =/tmp/execell-risk-marker.sh= çalıştırılabilir izinlerle oluşturulur, zararsız
+  içerik yazılır ve hemen silinir.
+- =/bin/true= child process olarak çalıştırılır.
+- =192.0.2.1:9= TEST-NET adresine non-blocking bağlantı girişimi yapılır.
+  Adres dokümantasyon için ayrılmıştır; DNS, gerçek servis veya veri aktarımı yoktur.
+
+Önce doğrudan çalıştırın:
+
+#+begin_src sh
+./build-manual/execell_manual_fixture risk
+#+end_src
+
+Sonra ExeCell ile izleyin:
+
+#+begin_src sh
+./build-manual/execell trace ./build-manual/execell_manual_fixture risk
+./build-manual/execell trace --format json \
+  ./build-manual/execell_manual_fixture risk > risk-trace.json
+#+end_src
+
+Çıktıda hassas yol açma denemeleri için =[FAIL]= veya =[FILE]=, marker için
+OPEN/WRITE/CHMOD/DELETE, child için SPAWN/EXEC/EXIT ve ağ için SOCKET/CONNECT
+olaylarını arayın. Host sistemde şu kontrollerin başarısız olması beklenir:
+
+#+begin_src sh
+test ! -e /tmp/execell-risk-marker.sh
+#+end_src
+
+Politika testi:
+
+#+begin_src sh
+./build-manual/execell inspect --deny-path /etc/shadow \
+  ./build-manual/execell_manual_fixture risk
+./build-manual/execell inspect --deny-endpoint 192.0.2.1 \
+  ./build-manual/execell_manual_fixture risk
+#+end_src
+
+./build-manual/execell inspect --deny-path /root/.ssh/id_rsa \
+  ./build-manual/execell_manual_fixture risk
+
+Komutların non-zero dönmesi risk politikasının devreye girdiğini gösterebilir.
+Fixture bazı sistemlerde kendi =/proc/self/environ= dosyasını açabilir; yine de
+veri okumaz. Fixture hiçbir hassas dosyayı değiştirmemelidir.
+
+* Temel ExeCell Denemeleri
+
+** Doğrudan çalıştırma
+
+#+begin_src sh
+./build-manual/execell run ./build-manual/execell_manual_fixture all
+#+end_src
+
+Beklenti: yardımcı programın kendi çıktısı görünür ve dönüş kodu 0 olur. Bu
+komut gözlem raporu üretmez; yalnızca =run= yolunu doğrular.
+
+** Sistem çağrısı izleme
+
+#+begin_src sh
+./build-manual/execell trace ./build-manual/execell_manual_fixture all
+#+end_src
+
+Beklenti: =[FILE]=, =[PROC]=, =[NET]= ve gerekirse =[FAIL]= satırları görünür.
+Dosya için OPEN/WRITE/CLOSE/DELETE, süreç için SPAWN/EXIT, ağ için SOCKET/BIND/
+LISTEN olaylarını arayın. Sistem çağrısı desteği veya çekirdek yetkisi eksikse
+çıktı azalabilir.
+
+JSON raporu:
+
+#+begin_src sh
+./build-manual/execell trace --format json \
+  ./build-manual/execell_manual_fixture all > trace.json
+python3 -m json.tool trace.json
+#+end_src
+
+JSON çıktısını başka programlarla işlemek için stdout'u dosyaya yönlendirin;
+hedef programın stdout'u rapor akışına karışabileceğinden test sırasında bunu
+ayrıca gözlemleyin.
+
+** Politika ile inspect
+
+#+begin_src sh
+./build-manual/execell inspect \
+  ./build-manual/execell_manual_fixture file
+./build-manual/execell inspect --deny-path /tmp \
+  ./build-manual/execell_manual_fixture file
+./build-manual/execell inspect --deny-endpoint 127.0.0.1 \
+  ./build-manual/execell_manual_fixture network
+#+end_src
+
+İlk komut normal özet üretir. İkinci ve üçüncü komutlarda hedefin erken
+durdurulması veya politika ihlali görülebilir; komutun başarılı olmayan dönüş
+kodu beklenen sonuçtur. Rapor çıktısını ve stderr'i birlikte inceleyin.
+
+JSON politika raporu:
+
+#+begin_src sh
+./build-manual/execell inspect --format json --deny-path /tmp \
+  ./build-manual/execell_manual_fixture file
+#+end_src
+
+** Sandbox
+
+#+begin_src sh
+./build-manual/execell sandbox \
+  ./build-manual/execell_manual_fixture all
+./build-manual/execell sandbox --network \
+  ./build-manual/execell_manual_fixture network
+./build-manual/execell sandbox --trace-events \
+  ./build-manual/execell_manual_fixture process
+#+end_src
+
+Sandbox kurulumu başarılıysa hedefin stdout/stderr ve exit status'u korunur.
+=--network= ayrı network namespace ister. =--trace-events= olayları sandbox
+izolasyonu ile birlikte göstermeyi dener.
+
+Salt-okunur kök dosya sistemini ayrıca kontrol edin:
+
+#+begin_src sh
+./build-manual/execell sandbox /bin/sh -c 'touch /etc/execell-manual-test'
+#+end_src
+
+Beklenti: =touch= başarısız olur. Host policy namespace oluşturmayı engelliyorsa
+bu sonuç yerine sandbox kurulum hatası görülebilir.
+
+Kaynak limitleri:
+
+#+begin_src sh
+./build-manual/execell sandbox --cpu 1 /bin/sh -c 'echo cpu-limit-test'
+./build-manual/execell sandbox --memory 67108864 /bin/sh -c 'echo memory-limit-test'
+#+end_src
+
+** Ortam yetenekleri
+
+#+begin_src sh
+./build-manual/execell package doctor
+./build-manual/execell package doctor --format json
+#+end_src
+
+=doctor= Btrfs, rootless, mount/user namespace ve Arch araçlarının bulunup
+bulunmadığını raporlar. Btrfs yoksa paket taraması fail-closed davranır.
+
+Rootfs belirtilmezse doctor sistemin kök mount noktasını (=/=) kontrol eder.
+Örneğin sistem Btrfs ise şu komut =btrfs: true= göstermelidir:
+
+#+begin_src sh
+./build-manual/execell package doctor --format json
+#+end_src
+
+Başka bir filesystem veya özel rootfs kontrolü için açıkça yol verin:
+
+#+begin_src sh
+./build-manual/execell package doctor --rootfs /path/to/rootfs --format json
+#+end_src
+
+* Paket Denemesi
+
+Yerel Arch paketi ve yanındaki detached imza gerekir:
+
+#+begin_src sh
+./build-manual/execell package scan --format terminal --network off \
+  --timeout 30s /path/to/example.pkg.tar.zst
+#+end_src
+
+İmza dosyası şu adreste olmalıdır:
+
+#+begin_example
+/path/to/example.pkg.tar.zst
+/path/to/example.pkg.tar.zst.sig
+#+end_example
+
+JSON çıktı:
+
+#+begin_src sh
+./build-manual/execell package scan --format json \
+  /path/to/example.pkg.tar.zst > package.json
+#+end_src
+
+Başarılı tarama session dizininde metadata, summary, events, filesystem,
+processes, network ve risk raporları oluşturur. Son session raporu:
+
+#+begin_src sh
+./build-manual/execell package report --format terminal /tmp/execell-package/session-...
+./build-manual/execell package cleanup
+#+end_src
+
+Network varsayılan olarak kapalıdır. Mirror kullanımı açık URL ve allowlist ister:
+
+#+begin_src sh
+./build-manual/execell package scan --network mirror \
+  --mirror https://mirror.example.org --allow-host mirror.example.org \
+  /path/to/example.pkg.tar.zst
+#+end_src
+
+Gerçek mirror kullanmadan önce yalnızca güvenilen test ortamı kullanın.
+
+* Beklenen Sonuçlar ve Sorun Giderme
+
+- =execell_manual_fixture= exit 0: fixture başarılı.
+- =execell_manual_fixture fail= exit 42: kasıtlı başarısız hedef.
+- =trace= çıktısında olay yok: ptrace izni, hedef mimarisi veya build durumunu kontrol edin.
+- =sandbox= setup failed: user/mount namespace host tarafından kapatılmış olabilir.
+- =package doctor= btrfs=no: paket taraması çalışmaz; bu güvenlik için beklenen davranıştır.
+- =inspect --deny-...= non-zero döner: politika ihlali denemesi başarılıdır.
+
+Komut dönüş kodunu görmek için:
+
+#+begin_src sh
+./build-manual/execell trace ./build-manual/execell_manual_fixture all
+printf 'exit=%s\n' "$?"
+#+end_src
+
+* Güvenlik Sınırı
+
+ExeCell tam davranış kapsamı veya kernel açığı koruması garantisi vermez.
+Privileged helper'lar, kernel açıkları, desteklenmeyen mimariler ve host güvenlik
+politikaları kapsam dışıdır. Güvenilmeyen yazılımı ana makinede ilk denemede
+çalıştırmayın; sanal makine kullanın.

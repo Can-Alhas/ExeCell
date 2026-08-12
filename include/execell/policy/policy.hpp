@@ -15,6 +15,7 @@ enum class Decision { allow, deny };
 struct Violation {
     std::string rule;
     std::string resource;
+    event::EventContext context;
 };
 
 struct Config {

@@ -17,7 +17,7 @@ struct Capabilities {
     bool mount_namespace{};
 };
 
-[[nodiscard]] Capabilities detect(const std::filesystem::path &path = "/tmp");
+[[nodiscard]] Capabilities detect(const std::filesystem::path &path = "/");
 
 class Session {
   public:

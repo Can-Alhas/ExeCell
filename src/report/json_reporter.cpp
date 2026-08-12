@@ -97,9 +97,9 @@ void JsonReporter::report(const event::Event& event)
             write_json_string(output_, value.resource);
         }
         if constexpr (requires { value.syscall; }) {
-            output_ << ",\"syscall\":\"";
+            output_ << ",\"syscall\":";
             write_json_string(output_, value.syscall);
-            output_ << "\",\"error\":" << value.error;
+            output_ << ",\"error\":" << value.error;
         }
         if constexpr (requires { value.status; }) {
             output_ << ",\"status\":" << value.status << ",\"signaled\":"
